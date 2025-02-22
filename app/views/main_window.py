@@ -14,13 +14,10 @@ class MainWindow:
         self.root.title("Smartcounting v.4")
         self.root.geometry("800x500")
         self.root.resizable(False, False)
-        
-        # Variabel untuk menyimpan input
         self.video_path = tk.StringVar()
         self.rtsp_url = tk.StringVar()
         self.location_entry = tk.StringVar()
-        self.password_entry = tk.StringVar()
-        
+        self.password_entry = tk.StringVar()  
         self._setup_ui()
     
     def _resource_path(self, relative_path):
@@ -52,21 +49,17 @@ class MainWindow:
         form_color = "#083c75"
         self.root.configure(bg=bg_color)
         
-        # Left panel
         left_frame = tk.Frame(self.root, bg=bg_color)
         left_frame.place(x=0, y=0, width=400, height=500)
-        
-        # Load and display logos
+
         self._setup_logos(left_frame, bg_color)
-        
-        # Right panel
+
         right_frame = tk.Frame(self.root, bg=form_color)
         right_frame.place(x=400, y=0, width=400, height=500)
         
         self._setup_form(right_frame, form_color)
     
     def _setup_logos(self, frame, bg_color):
-        # Logo pertama
         logo_path = self._resource_path("assets/logo.png")
         logo_image = Image.open(logo_path)
         logo_image = logo_image.resize((100, 115))
@@ -74,8 +67,6 @@ class MainWindow:
         
         logo_label = tk.Label(frame, image=self.logo_photo, bg=bg_color)
         logo_label.pack(pady=20)
-        
-        # Judul aplikasi
         app_title = tk.Label(frame, 
                             text="APLIKASI\nSMART COUNTING", 
                             bg=bg_color, 
@@ -83,8 +74,6 @@ class MainWindow:
                             font=("Arial", 20, "bold"), 
                             justify="center")
         app_title.pack()
-        
-        # Logo kedua
         logo_path2 = self._resource_path("assets/logo_sc.png")
         logo_image2 = Image.open(logo_path2)
         logo_image2 = logo_image2.resize((100, 115))
@@ -94,26 +83,20 @@ class MainWindow:
         logo_label2.pack(pady=20)
     
     def _setup_form(self, frame, form_color):
-        # Judul form
         form_title = tk.Label(frame, 
                             text="DISHUB BANYUMAS", 
                             bg=form_color, 
                             fg="white", 
                             font=("Arial", 18, "bold"))
         form_title.pack(pady=20)
-        
-        # Tombol browse
         btn_browse = ttk.Button(frame, 
                             text="File Video / URL RTSP", 
                             command=self.upload_file)
         btn_browse.pack(fill="x", padx=20, pady=5)
-        
-        # Entry fields
         self._create_entry(frame, "Video Path / RTSP URL:", self.video_path)
         self._create_entry(frame, "Lokasi Survey:", self.location_entry)
         self._create_entry(frame, "Password:", self.password_entry, is_password=True)
         
-        # Tombol submit
         submit_button = ttk.Button(frame, text="SUBMIT", command=self.submit)
         submit_button.pack(fill="x", padx=20, pady=20)
     
@@ -131,8 +114,7 @@ class MainWindow:
         if not location or not password:
             messagebox.showerror("Error", "Lokasi Dan Password Harus Diisi")
             return
-        
-        # Verifikasi password
+
         test_password = "tes"
         salt, hashed_password = hash_password(test_password)
         

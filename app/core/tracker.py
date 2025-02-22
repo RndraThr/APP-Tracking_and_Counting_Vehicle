@@ -19,22 +19,18 @@ class VehicleTracker:
         self.max_prediction_age = 30
         self.smoothing_window = 3
         self.debug_mode = True
-        
-        # Statistik per frame
         self.frame_stats = {
             'current_detections': 0,
             'current_tracks': 0,
             'lost_tracks': 0
         }
-        
-        # Statistik kumulatif
+
         self.cumulative_stats = {
             'total_tracked': set(),
             'total_detections': 0,
             'total_lost': 0
         }
         
-        # Track prediction parameters
         self.velocity_history = {}
         self.last_positions = {}
         self.last_update_time = {}
@@ -79,9 +75,7 @@ class VehicleTracker:
         for track_id, last_pos in self.last_positions.items():
             if track_id not in current_track_ids and track_id in self.velocity_history:
                 time_since_last_update = current_time - self.last_update_time.get(track_id, 0)
-                
-                # Naikkan prediction age untuk mempertahankan prediksi lebih lama
-                if time_since_last_update < self.max_prediction_age:  # max_prediction_age = 30
+                if time_since_last_update < self.max_prediction_age:
                     velocity = self.velocity_history[track_id]
                     predicted_pos = last_pos + velocity * time_since_last_update
                     
@@ -98,7 +92,7 @@ class VehicleTracker:
         Validasi bounding box dengan threshold yang lebih longgar
         """
         x1, y1, x2, y2 = bbox
-        padding = 20  # Allow some margin outside frame
+        padding = 20 
         
         if ((-padding <= x1 <= self.frame_width + padding) and 
             (-padding <= y1 <= self.frame_height + padding) and 
@@ -118,11 +112,9 @@ class VehicleTracker:
             time_diff = current_time - last_time
             
             if time_diff > 0:
-                velocity = (current_pos - last_pos) / time_diff
-                
-                # Smooth velocity dengan exponential moving average
+                velocity = (current_pos - last_pos) / time_diff   
                 if track_id in self.velocity_history:
-                    alpha = 0.7  # Smoothing factor
+                    alpha = 0.7
                     self.velocity_history[track_id] = (
                         alpha * velocity + 
                         (1 - alpha) * self.velocity_history[track_id]
@@ -130,7 +122,6 @@ class VehicleTracker:
                 else:
                     self.velocity_history[track_id] = velocity
         
-        # Update last position dan time
         self.last_positions[track_id] = current_pos
         self.last_update_time[track_id] = current_time
 
@@ -141,27 +132,21 @@ class VehicleTracker:
             if not detections:
                 self.update_statistics([], [])
                 return []
-            
-            # Konversi deteksi ke format SORT
+
             detection_array = np.array([
                 [d['bbox'][0], d['bbox'][1], d['bbox'][2], d['bbox'][3], d['confidence']]
                 for d in detections
             ])
-            
-            # Update tracker dengan parameter yang disesuaikan
+
             tracks = self.tracker.update(detection_array)
-            
-            # Prediksi missing tracks dengan parameter yang lebih toleran
             if len(tracks) < len(detections):
                 predicted = self.predict_missing_tracks(tracks, current_time)
                 if len(predicted) > 0:
                     tracks = np.vstack([tracks, predicted])
-            
-            # Update tracking history untuk smoothing
             for track in tracks:
                 track_id = int(track[4])
                 if track_id not in self.track_history:
-                    self.track_history[track_id] = deque(maxlen=10)  # Riwayat 10 frame
+                    self.track_history[track_id] = deque(maxlen=10)
                 self.track_history[track_id].append(track[:4])
             
             return tracks
@@ -178,12 +163,10 @@ class VehicleTracker:
         for track in tracks:
             track_id = int(track[4])
             if track_id in self.track_history:
-                # Cek konsistensi dengan history
                 last_pos = self.track_history[track_id][-1]
                 current_pos = track[:4]
                 
-                # Jika perubahan terlalu drastis, mungkin ini objek berbeda
-                if np.all(np.abs(current_pos - last_pos) < 50):  # threshold 50 pixel
+                if np.all(np.abs(current_pos - last_pos) < 50):
                     consistent_tracks.append(track)
             else:
                 consistent_tracks.append(track)
@@ -194,14 +177,12 @@ class VehicleTracker:
         """
         Update statistik tracking
         """
-        # Update frame stats
         self.frame_stats['current_detections'] = len(detections)
         self.frame_stats['current_tracks'] = len(tracks)
         self.frame_stats['lost_tracks'] = max(0, 
             self.frame_stats['current_detections'] - self.frame_stats['current_tracks']
         )
         
-        # Update cumulative stats
         self.cumulative_stats['total_detections'] += len(detections)
         self.cumulative_stats['total_lost'] += self.frame_stats['lost_tracks']
         

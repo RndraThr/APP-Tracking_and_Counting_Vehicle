@@ -1,7 +1,3 @@
-# File 1: sort/__init__.py
-# Leave this empty
-
-# File 2: sort/sort.py
 """
     SORT: A Simple, Online and Realtime Tracker
     Copyright (C) 2016-2020 Alex Bewley alex@bewley.ai

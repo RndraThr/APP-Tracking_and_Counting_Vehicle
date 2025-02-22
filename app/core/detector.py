@@ -6,8 +6,7 @@ import os
 class VehicleDetector:
     def __init__(self, model_path):
         self.model = YOLO(model_path, task="detect")
-        
-        # Parameter deteksi yang dioptimalkan
+
         self.conf_threshold = 0.2
         self.iou_threshold = 0.25
         self.min_width = 30
@@ -16,8 +15,7 @@ class VehicleDetector:
         self.max_height = 500
         self.min_aspect_ratio = 0.3
         self.max_aspect_ratio = 3.0
-        
-        # Definisi range warna dalam HSV
+
         self.color_ranges = {
             'white': ([0, 0, 200], [180, 30, 255]),
             'black': ([0, 0, 0], [180, 255, 30]),
@@ -35,15 +33,13 @@ class VehicleDetector:
         """
         try:
             x1, y1, x2, y2 = map(int, bbox)
-            
-            # Pastikan koordinat dalam batas frame
+
             height, width = frame.shape[:2]
             x1 = max(0, x1)
             y1 = max(0, y1)
             x2 = min(width, x2)
             y2 = min(height, y2)
-            
-            # Ambil region tengah kendaraan (50% area) untuk menghindari bayangan
+
             center_x = (x1 + x2) // 2
             center_y = (y1 + y2) // 2
             width_half = (x2 - x1) // 4
@@ -56,8 +52,7 @@ class VehicleDetector:
             
             if vehicle_region.size == 0:
                 return 'unknown'
-            
-            # Konversi ke HSV dan blur untuk mengurangi noise
+
             hsv = cv2.cvtColor(vehicle_region, cv2.COLOR_BGR2HSV)
             hsv = cv2.GaussianBlur(hsv, (5, 5), 0)
             
@@ -76,10 +71,7 @@ class VehicleDetector:
                 if confidence > max_confidence and confidence > 0.3:
                     max_confidence = confidence
                     detected_color = color_name
-            
-            # Tambahan untuk menangani warna yang ambigu
             if max_confidence < 0.4:
-                # Cek apakah ada warna lain yang cukup dekat dengan max confidence
                 second_best = sorted(color_confidences.items(), key=lambda x: x[1])[-2]
                 if max_confidence - second_best[1] < 0.1:
                     detected_color = 'multi'
@@ -96,30 +88,24 @@ class VehicleDetector:
         """
         if not detections:
             return []
-            
-        # Konversi ke format yang sesuai untuk NMS
+
         boxes = np.array([d['bbox'] for d in detections])
         scores = np.array([d['confidence'] for d in detections])
-        
-        # Konversi bbox ke format [x1, y1, x2, y2]
+
         if len(boxes) > 0:
             x1 = boxes[:, 0]
             y1 = boxes[:, 1]
             x2 = boxes[:, 2]
             y2 = boxes[:, 3]
-            
-            # Hitung area
+
             areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-            
-            # Sort berdasarkan confidence
             order = scores.argsort()[::-1]
             
             keep = []
             while order.size > 0:
                 i = order[0]
                 keep.append(i)
-                
-                # Hitung IoU dengan semua boxes lainnya
+
                 xx1 = np.maximum(x1[i], x1[order[1:]])
                 yy1 = np.maximum(y1[i], y1[order[1:]])
                 xx2 = np.minimum(x2[i], x2[order[1:]])
@@ -133,8 +119,7 @@ class VehicleDetector:
                 
                 inds = np.where(ovr <= self.iou_threshold)[0]
                 order = order[inds + 1]
-            
-            # Filter deteksi
+
             filtered_detections = [detections[i] for i in keep]
             return filtered_detections
             
@@ -148,18 +133,15 @@ class VehicleDetector:
         width = x2 - x1
         height = y2 - y1
         
-        # Validasi ukuran
         if width < self.min_width or height < self.min_height:
             return False
         if width > self.max_width or height > self.max_height:
             return False
-            
-        # Validasi aspect ratio
+
         aspect_ratio = width / height
         if aspect_ratio < self.min_aspect_ratio or aspect_ratio > self.max_aspect_ratio:
             return False
-            
-        # Validasi confidence
+
         if confidence < self.conf_threshold:
             return False
             

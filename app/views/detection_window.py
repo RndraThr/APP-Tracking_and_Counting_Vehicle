@@ -17,28 +17,34 @@ class DetectionWindow:
         """
         self.video_path = video_path
         self.location = location
-        
-        # Konfigurasi GPU jika tersedia
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         if torch.cuda.is_available():
             torch.backends.cudnn.benchmark = True
-        
-        # Inisialisasi ukuran frame terlebih dahulu
+            torch.backends.cudnn.deterministic = False
+            gpu_name = torch.cuda.get_device_name()
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+            print(f"Using GPU: {gpu_name} with {gpu_memory:.2f}GB memory")
+            self.batch_size = 1 if gpu_memory < 4 else 2
+        else:
+            print("GPU not detected. Using CPU for processing.")
+            self.batch_size = 1
+
+        self.frame_skip = 1 if torch.cuda.is_available() else 2
+        self.detection_threshold = 0.3 if torch.cuda.is_available() else 0.4
         self.frame_width = 640
         self.frame_height = 360
-        
-        # Konfigurasi video dan pemrosesan
         self.frame_skip = 2
         self.video_speed = 1.5
         self.frame_count = 0
         self.detection_threshold = 0.4
         self.tracking_memory = {}
-        self.classification_history = {}  # Tambahan untuk tracking klasifikasi
+        self.classification_history = {}
         self.tracked_vehicles = set()
         self.vehicles_tracked = set()
         self.total_count = 0
-        
-        # Counter per jenis kendaraan
+        self.drawing = False
+        self.vertical_lines = []
+        self.temp_line = None
         self.vehicle_counts = {
             'car': 0,
             'truck': 0,
@@ -47,20 +53,14 @@ class DetectionWindow:
         }
         
         try:
-            # Inisialisasi komponen dan setup
             self.setup_components()
             self.setup_video_capture()
             self.setup_video_writer()
-            
-            # Inisialisasi variabel drawing
             self.drawing = False
             self.lines = []
             self.x3, self.y3, self.x4, self.y4 = -1, -1, -1, -1
-            
-            # Setup tampilan
             self.setup_display()
 
-            # Verifikasi koneksi dan file
             if not self.verify_database_connection():
                 raise Exception("Failed to establish database connection")
                 
@@ -77,17 +77,12 @@ class DetectionWindow:
         """
         try:
             model_path = os.path.join(os.path.dirname(__file__), "..", "..", "models", "yolov8n.onnx")
-            
-            # Inisialisasi detector dengan parameter optimal
             self.detector = VehicleDetector(model_path)
-            
-            # Inisialisasi tracker dengan parameter optimal
             self.tracker = VehicleTracker(
                 frame_width=self.frame_width,
                 frame_height=self.frame_height
             )
-            
-            # Inisialisasi komponen lainnya
+
             self.counter = VehicleCounter()
             self.repository = VehicleRepository(
                 host="localhost",
@@ -99,26 +94,51 @@ class DetectionWindow:
             print(f"Error initializing components: {e}")
             raise
 
+    # def setup_video_capture(self):
+    #     """
+    #     Konfigurasi video capture dengan pengaturan optimal untuk performa.
+    #     """
+    #     self.cap = cv2.VideoCapture(self.video_path)
+    #     self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 10)
+    #     self.process_width = 640
+    #     self.process_height = 360
+    #     self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.process_width)
+    #     self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.process_height)
+    #     self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
+    #     self.last_process_time = time.time()
+
+
     def setup_video_capture(self):
         """
-        Konfigurasi video capture dengan pengaturan optimal untuk performa.
+        Konfigurasi video capture dengan support untuk RTSP.
         """
-        self.cap = cv2.VideoCapture(self.video_path)
-        
-        # Tingkatkan buffer size
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 10)
-        
-        # Set frame size yang lebih kecil untuk processing
-        self.process_width = 640
-        self.process_height = 360
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.process_width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.process_height)
-        
-        # Get FPS
-        self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
-        
-        # Inisialisasi waktu untuk frame rate control
-        self.last_process_time = time.time()
+        try:
+            is_rtsp = self.video_path.lower().startswith(('rtsp://', 'rtmp://', 'http://'))
+            
+            if is_rtsp:
+                self.cap = cv2.VideoCapture(self.video_path)
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
+                self.cap.set(cv2.CAP_PROP_RTSP_TRANSPORT, cv2.CAP_RTSP_TCP)
+                self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'H264'))
+            else:
+                self.cap = cv2.VideoCapture(self.video_path)
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 10)
+            if not self.cap.isOpened():
+                raise Exception(f"Failed to open video source: {self.video_path}")
+
+            self.process_width = 640
+            self.process_height = 360
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.process_width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.process_height)
+            self.fps = int(self.cap.get(cv2.CAP_PROP_FPS))
+            if is_rtsp and self.fps == 0:
+                self.fps = 30            
+            self.last_process_time = time.time()
+            
+        except Exception as e:
+            print(f"Error in setup_video_capture: {e}")
+            raise
+    
 
     def setup_video_writer(self):
         """
@@ -136,7 +156,7 @@ class DetectionWindow:
             output_path,
             fourcc,
             self.fps,
-            (self.frame_width, self.frame_height),  # Gunakan ukuran normal
+            (self.frame_width, self.frame_height),
             isColor=True
         )
         
@@ -163,39 +183,27 @@ class DetectionWindow:
         """
         try:
             x1, y1, x2, y2 = bbox
-            
-            # Warna untuk different vehicle types dengan nilai RGB
             colors = {
-                'car': (0, 255, 0),      # Hijau
-                'truck': (0, 0, 255),    # Merah
-                'bus': (255, 0, 0),      # Biru
-                'motorcycle': (255, 255, 0)  # Kuning
+                'car': (0, 255, 0),
+                'truck': (0, 0, 255),
+                'bus': (255, 0, 0),
+                'motorcycle': (255, 255, 0)
             }
-            
-            # Dapatkan warna sesuai tipe kendaraan
             box_color = colors.get(vehicle_type, (255, 255, 255))
-            
-            # Gambar bounding box dengan warna sesuai tipe
             cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 3)
-            
-            # Background untuk label yang menyesuaikan warna tipe kendaraan
             label = f"ID:{track_id} {vehicle_type} {speed}km/h"
             (label_width, label_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-            
-            # Background dengan warna yang sama dengan bbox
             cv2.rectangle(frame, 
                         (x1, y1 - 25), 
                         (x1 + label_width + 10, y1), 
-                        box_color,  # Menggunakan warna yang sama dengan bbox
+                        box_color,
                         -1)
-            
-            # Text label tetap hitam untuk keterbacaan
             cv2.putText(frame, 
                     label, 
                     (x1 + 5, y1 - 7),
                     cv2.FONT_HERSHEY_SIMPLEX, 
                     0.6,  
-                    (0, 0, 0),  # Teks selalu hitam
+                    (0, 0, 0),
                     2)  
                     
         except Exception as e:
@@ -224,19 +232,30 @@ class DetectionWindow:
         self.overlay_color = (0, 0, 0)
         self.overlay_alpha = 0.3
 
+    # def draw_line(self, event, x, y, flags, param):
+    #     """
+    #     Handler untuk input mouse dalam menggambar garis.
+    #     """
+    #     if event == cv2.EVENT_LBUTTONDOWN:
+    #         self.drawing = True
+    #         self.x3, self.y3 = x, y
+    #     elif event == cv2.EVENT_MOUSEMOVE and self.drawing:
+    #         self.x4, self.y4 = x, y
+    #     elif event == cv2.EVENT_LBUTTONUP:
+    #         self.drawing = False
+    #         self.x4, self.y4 = x, y
+    #         self.lines.append(((self.x3, self.y3), (self.x4, self.y4)))
+    
     def draw_line(self, event, x, y, flags, param):
         """
-        Handler untuk input mouse dalam menggambar garis.
+        Handler untuk input mouse dalam menggambar garis vertikal.
         """
         if event == cv2.EVENT_LBUTTONDOWN:
             self.drawing = True
-            self.x3, self.y3 = x, y
+            self.vertical_lines.append(x)
+            
         elif event == cv2.EVENT_MOUSEMOVE and self.drawing:
-            self.x4, self.y4 = x, y
-        elif event == cv2.EVENT_LBUTTONUP:
-            self.drawing = False
-            self.x4, self.y4 = x, y
-            self.lines.append(((self.x3, self.y3), (self.x4, self.y4)))
+            self.temp_line = x
 
     def validate_vehicle_class(self, bbox, label):
         """
@@ -246,19 +265,13 @@ class DetectionWindow:
         width = x2 - x1
         height = y2 - y1
         aspect_ratio = width / height if height != 0 else 0
-
-        # Validasi berdasarkan kelas
         if label == "bus":
-            # Bus biasanya lebih tinggi dan lebar
             return width > 100 and height > 120 and aspect_ratio > 1.2
         elif label == "truck":
-            # Truck biasanya lebih panjang
             return width > 100 and height > 100 and aspect_ratio > 1.5
         elif label == "motorcycle":
-            # Motorcycle biasanya lebih kecil
             return width < 100 and height < 120 and aspect_ratio < 1.2
         elif label == "car":
-            # Car ukuran sedang
             return 50 < width < 150 and 50 < height < 120
         
         return True
@@ -287,24 +300,12 @@ class DetectionWindow:
     def process_frame(self, frame):
         try:
             frame_resized = cv2.resize(frame, (self.frame_width, self.frame_height))
-            
-            # Gambar garis referensi SEBELUM deteksi dan tracking
             self._draw_reference_lines(frame_resized)
-            
-            # Deteksi dan tracking
             detections = self.detector.detect(frame_resized)
             tracks = self.tracker.update(detections)
-            
-            # Proses tracking
             current_frame_vehicles = self._process_tracks(tracks, frame_resized)
-            
-            # Update statistik
             self._update_statistics(current_frame_vehicles)
-            
-            # Tampilkan statistik
             self.draw_statistics(frame_resized)
-            
-            # Simpan frame
             self.video_writer.write(frame_resized)
             
             return frame_resized
@@ -313,51 +314,70 @@ class DetectionWindow:
             print(f"Error in process_frame: {e}")
             return frame
 
+    # def _draw_reference_lines(self, frame):
+    #     """
+    #     Menggambar garis referensi pada frame.
+    #     """
+    #     try:
+    #         middle_x = self.frame_width // 2
+    #         cv2.line(frame, (middle_x, 0), (middle_x, self.frame_height), 
+    #                 (255, 255, 0), 2)  # Warna kuning untuk garis vertikal
+            
+    #         cv2.putText(frame, "Lajur Kanan", (middle_x + 10, 30), 
+    #                     self.font, self.font_scale * 1.2, self.text_color, 
+    #                     self.line_type)
+    #         cv2.putText(frame, "Lajur Kiri", (225, 30), 
+    #                     self.font, self.font_scale * 1.2, self.text_color, 
+    #                     self.line_type)
+            
+    #         counting_line_y = int(self.frame_height * 0.5)
+    #         cv2.line(frame, (0, counting_line_y), 
+    #                 (self.frame_width, counting_line_y), 
+    #                 (0, 0, 255), 2)  # Warna merah untuk garis horizontal
+                    
+    #         print(f"Drawing reference lines: middle_x={middle_x}, counting_line_y={counting_line_y}")
+                    
+    #     except Exception as e:
+    #         print(f"Error drawing reference lines: {e}")
+
+    
     def _draw_reference_lines(self, frame):
         """
         Menggambar garis referensi pada frame.
         """
         try:
-            # Garis vertikal (pemisah lajur)
-            middle_x = self.frame_width // 2
-            cv2.line(frame, (middle_x, 0), (middle_x, self.frame_height), 
-                    (255, 255, 0), 2)  # Warna kuning untuk garis vertikal
-            
-            # Label lajur
-            cv2.putText(frame, "Lajur Kanan", (middle_x + 10, 30), 
-                        self.font, self.font_scale * 1.2, self.text_color, 
-                        self.line_type)
-            cv2.putText(frame, "Lajur Kiri", (225, 30), 
-                        self.font, self.font_scale * 1.2, self.text_color, 
-                        self.line_type)
-            
-            # Garis horizontal (counting line)
             counting_line_y = int(self.frame_height * 0.5)
             cv2.line(frame, (0, counting_line_y), 
                     (self.frame_width, counting_line_y), 
-                    (0, 0, 255), 2)  # Warna merah untuk garis horizontal
-                    
-            print(f"Drawing reference lines: middle_x={middle_x}, counting_line_y={counting_line_y}")
-                    
+                    (0, 0, 255), 2)            
+            for x_pos in self.vertical_lines:
+                cv2.line(frame, (x_pos, 0), (x_pos, self.frame_height), 
+                        (255, 255, 0), 2)
+
+                if x_pos < self.frame_width // 2:
+                    cv2.putText(frame, "Lajur Kiri", (x_pos + 10, 30), 
+                            self.font, self.font_scale * 1.2, self.text_color, 
+                            self.line_type)
+                else:
+                    cv2.putText(frame, "Lajur Kanan", (x_pos + 10, 30), 
+                            self.font, self.font_scale * 1.2, self.text_color, 
+                            self.line_type)
+                        
         except Exception as e:
             print(f"Error drawing reference lines: {e}")
-
+    
+    
     def _check_line_crossing(self, y1, y2):
         """
         Memeriksa crossing dengan margin yang lebih besar
         """
         counting_line_y = int(self.frame_height * 0.5)
-        margin = 25  # Margin yang lebih besar
-        
-        # Area deteksi crossing
+        margin = 25
         detection_zone = (counting_line_y - margin, counting_line_y + margin)
-        
-        # Deteksi crossing yang lebih robust
+
         if y1 <= counting_line_y <= y2:
             vehicle_height = y2 - y1
             center_y = (y1 + y2) / 2
-            
-            # Pastikan kendaraan benar-benar melintasi garis
             if abs(center_y - counting_line_y) < margin:
                 return True
         
@@ -368,29 +388,23 @@ class DetectionWindow:
         Memproses semua tracks yang terdeteksi dalam frame saat ini.
         """
         current_frame_vehicles = set()
-        
-        # Dapatkan mapping deteksi terbaru
         detections = self.detector.detect(frame)
-        
-        # Track management untuk menghindari penumpukan
+
         active_tracks = {}
         
         for track in tracks:
             try:
-                # Ekstrak informasi track
                 x1, y1, x2, y2, track_id = map(int, track)
                 track_bbox = [x1, y1, x2, y2]
                 center = ((x1 + x2) // 2, (y1 + y2) // 2)
 
-                # Debug tracking
                 print(f"\nProcessing track {track_id}")
                 print(f"Position: x1={x1}, y1={y1}, x2={x2}, y2={y2}")
-                
-                # Cek jarak dengan track lain yang sudah aktif
+
                 too_close = False
                 for other_id, other_center in active_tracks.items():
                     dist = np.sqrt((center[0] - other_center[0])**2 + (center[1] - other_center[1])**2)
-                    if dist < 30:  # threshold jarak minimal
+                    if dist < 30:
                         too_close = True
                         break
                         
@@ -398,12 +412,10 @@ class DetectionWindow:
                     continue
                         
                 active_tracks[track_id] = center
-                
-                # Hitung informasi kendaraan
                 speed = self.counter.calculate_speed(track_id, center[0], center[1])
-                direction = "kanan" if center[0] > self.frame_width//2 else "kiri"
-                
-                # Cari deteksi yang paling cocok menggunakan IoU
+                # direction = "kanan" if center[0] > self.frame_width//2 else "kiri"
+                direction = self._get_direction(center[0])
+
                 best_iou = 0
                 best_detection = None
                 
@@ -413,23 +425,20 @@ class DetectionWindow:
                     if iou > best_iou and iou > 0.13:
                         best_iou = iou
                         best_detection = det
-                
-                # Klasifikasi kendaraan dengan history
+
                 if best_detection:
                     vehicle_type = best_detection['label']
                     if track_id not in self.classification_history:
                         self.classification_history[track_id] = {}
                     if vehicle_type in ['bus', 'truck']:
                         self.classification_history[track_id][vehicle_type] = self.classification_history[track_id].get(vehicle_type, 0) + 1
-                        # Gunakan klasifikasi yang lebih dominan
                         if len(self.classification_history[track_id]) > 0:
                             vehicle_type = max(self.classification_history[track_id].items(), key=lambda x: x[1])[0]
                     color = best_detection.get('color', 'unknown')
                 else:
                     vehicle_type = self.tracking_memory.get(track_id, {}).get('type', 'car')
                     color = self.tracking_memory.get(track_id, {}).get('color', 'unknown')
-                
-                # Update tracking memory
+
                 if track_id not in self.tracking_memory:
                     self.tracking_memory[track_id] = {
                         'first_seen': self.frame_count,
@@ -449,8 +458,7 @@ class DetectionWindow:
                         'direction': direction,
                         'center': center
                     })
-                
-                # Cek crossing line dengan debug
+
                 if not self.tracking_memory[track_id]['counted']:
                     crossing_detected = self._check_line_crossing(y1, y2)
                     print(f"Crossing check for track {track_id}: {crossing_detected}")
@@ -459,8 +467,7 @@ class DetectionWindow:
                         self.tracking_memory[track_id]['counted'] = True
                         current_frame_vehicles.add((track_id, direction))
                         print(f"Added vehicle {track_id} to current frame vehicles")
-                        
-                        # Simpan ke database
+
                         self.save_vehicle_data(
                             track_id,
                             vehicle_type,
@@ -469,8 +476,7 @@ class DetectionWindow:
                             track_bbox,
                             color
                         )
-                
-                # Visualisasi
+
                 self.draw_vehicle_box(
                     frame, 
                     track_bbox,
@@ -488,14 +494,17 @@ class DetectionWindow:
         print(f"Current frame vehicles: {current_frame_vehicles}")
         return current_frame_vehicles
     
+    def _get_direction(self, center_x):
+        if not self.vertical_lines:
+            return "kanan" if center_x > self.frame_width//2 else "kiri"
+
+        nearest_line = min(self.vertical_lines, key=lambda x: abs(x - center_x))
+        return "kanan" if center_x > nearest_line else "kiri"
+    
     # def _process_tracks(self, tracks, frame):
     #     current_frame_vehicles = set()
-    #     active_tracks = {}
-        
-    #     # Dapatkan deteksi terbaru dari YOLO
+    #     active_tracks = {} 
     #     detections = self.detector.detect(frame)
-        
-    #     # Urutkan tracks berdasarkan ukuran
     #     tracks_with_area = []
     #     for track in tracks:
     #         x1, y1, x2, y2, track_id = map(int, track)
@@ -509,8 +518,6 @@ class DetectionWindow:
     #             x1, y1, x2, y2, track_id = map(int, track)
     #             track_bbox = [x1, y1, x2, y2]
     #             center = ((x1 + x2) // 2, (y1 + y2) // 2)
-                
-    #             # Cari deteksi yang sesuai menggunakan IoU
     #             best_detection = None
     #             best_iou = 0
                 
@@ -520,7 +527,6 @@ class DetectionWindow:
     #                     best_iou = iou
     #                     best_detection = det
                 
-    #             # Pengecekan overlap yang lebih toleran
     #             too_close = False
     #             for other_id, other_info in active_tracks.items():
     #                 other_center = other_info['center']
@@ -537,20 +543,13 @@ class DetectionWindow:
     #             if too_close:
     #                 continue  # Langsung skip jika terlalu dekat
                 
-    #             # Update tracking
     #             active_tracks[track_id] = {
     #                 'center': center,
     #                 'bbox': track_bbox
     #             }
-                
-    #             # Proses kendaraan
     #             speed = self.counter.calculate_speed(track_id, center[0], center[1])
     #             direction = "kanan" if center[0] > self.frame_width//2 else "kiri"
-                
-    #             # Gunakan label dari deteksi YOLO jika ada
     #             vehicle_type = best_detection['label'] if best_detection else 'car'
-                
-    #             # Update memory dengan smoothing yang lebih halus
     #             if track_id not in self.tracking_memory:
     #                 self.tracking_memory[track_id] = {
     #                     'first_seen': self.frame_count,
@@ -566,15 +565,11 @@ class DetectionWindow:
     #                 }
     #             else:
     #                 prev_track = self.tracking_memory[track_id]
-                    
-    #                 # Hitung perubahan bbox
     #                 bbox_change = sum(abs(a - b) for a, b in zip(track_bbox, prev_track['bbox']))
-                    
-    #                 # Jika perubahan terlalu besar, gunakan bbox sebelumnya
+
     #                 if bbox_change > 100 and prev_track['stable_count'] > 5:
     #                     track_bbox = prev_track['bbox']
     #                 else:
-    #                     # Smooth bbox dengan weight yang lebih kecil
     #                     track_bbox = [
     #                         int(0.8 * curr + 0.2 * prev)
     #                         for curr, prev in zip(track_bbox, prev_track['bbox'])
@@ -590,15 +585,13 @@ class DetectionWindow:
     #                     'prev_bbox': prev_track['bbox'],  # Update prev_bbox
     #                     'type': vehicle_type
     #                 })
-                
-    #             # Proses crossing dengan validasi tambahan
+
     #             if not self.tracking_memory[track_id]['counted']:
     #                 if self._check_line_crossing(y1, y2):
     #                     if self.tracking_memory[track_id]['stable_count'] >= 3:
     #                         self.tracking_memory[track_id]['counted'] = True
     #                         current_frame_vehicles.add((track_id, direction))
-                
-    #             # Visualisasi
+
     #             self.draw_vehicle_box(
     #                 frame,
     #                 track_bbox,  # Gunakan bbox yang sudah dismooth
@@ -659,13 +652,13 @@ class DetectionWindow:
         """
         Update statistik counting berdasarkan kendaraan yang terdeteksi
         """
-        print(f"Updating statistics for vehicles: {current_frame_vehicles}")  # Debug log
+        print(f"Updating statistics for vehicles: {current_frame_vehicles}")
         
         for track_id, direction in current_frame_vehicles:
             self.total_count += 1
             vehicle_type = self.tracking_memory[track_id].get('type', 'car')
             self.vehicle_counts[vehicle_type] += 1
-            print(f"Updated count for {vehicle_type}: {self.vehicle_counts[vehicle_type]}")  # Debug log
+            print(f"Updated count for {vehicle_type}: {self.vehicle_counts[vehicle_type]}")
     
     def cleanup_tracking_memory(self, current_ids):
         """
@@ -676,8 +669,7 @@ class DetectionWindow:
         
         if not hasattr(self, 'last_cleanup'):
             self.last_cleanup = current_time
-        
-        # Cleanup setiap 3 detik
+
         if current_time - self.last_cleanup > 5:
             inactive_ids = []
             for track_id in self.tracking_memory:
@@ -702,44 +694,35 @@ class DetectionWindow:
         """
         Menampilkan statistik kendaraan pada frame dengan tampilan yang lebih compact.
         """
-        # Background overlay untuk statistik yang lebih kecil
-        overlay_height = 100  # Dikurangi dari 140
-        overlay_width = 150   # Dikurangi dari 250
-        padding = 5          # Dikurangi dari 10
-        
-        # Buat overlay hitam transparan di pojok kiri atas
+        overlay_height = 100
+        overlay_width = 150
+        padding = 5
         overlay = frame[0:overlay_height, 0:overlay_width].copy()
         cv2.rectangle(frame, (0, 0), (overlay_width, overlay_height), 
                     (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.3, frame[0:overlay_height, 0:overlay_width], 0.7, 0, 
                         frame[0:overlay_height, 0:overlay_width])
-        
-        # Font settings dengan ukuran lebih kecil
+
         font = cv2.FONT_HERSHEY_SIMPLEX
-        title_scale = 0.45    # Dikurangi dari 0.7
-        text_scale = 0.4    # Dikurangi dari 0.6
-        font_thickness = 1   # Dikurangi dari 2
-        
-        # Warna teks
-        title_color = (255, 255, 255)  # Putih
+        title_scale = 0.45
+        text_scale = 0.4
+        font_thickness = 1
+        title_color = (255, 255, 255)
         value_colors = {
-            'total': (255, 255, 255),  # Putih
-            'car': (0, 255, 0),        # Hijau
-            'truck': (0, 0, 255),      # Merah
-            'bus': (255, 0, 0),        # Biru
-            'motorcycle': (255, 255, 0) # Cyan
+            'total': (255, 255, 255),
+            'car': (0, 255, 0),
+            'truck': (0, 0, 255),
+            'bus': (255, 0, 0),
+            'motorcycle': (255, 255, 0)
         }
-        
-        # Posisi awal teks
+
         x = padding
-        y = 15  # Dikurangi dari 30
-        
-        # Total Kendaraan
+        y = 15
+
         cv2.putText(frame, f"Total Vehicles: {self.total_count}", 
                     (x, y), font, title_scale, title_color, font_thickness)
-        
-        # Detail per jenis kendaraan dengan spacing yang lebih kecil
-        y += 15  # Dikurangi dari 25
+
+        y += 15
         cv2.putText(frame, f"Cars: {self.vehicle_counts['car']}", 
                     (x, y), font, text_scale, value_colors['car'], font_thickness)
         
@@ -755,7 +738,6 @@ class DetectionWindow:
         cv2.putText(frame, f"Motorcycles: {self.vehicle_counts['motorcycle']}", 
                     (x, y), font, text_scale, value_colors['motorcycle'], font_thickness)
         
-        # Timestamp tetap di pojok kanan bawah
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         timestamp_size = cv2.getTextSize(timestamp, font, 0.5, 1)[0]
         timestamp_x = frame.shape[1] - timestamp_size[0] - padding
@@ -791,43 +773,116 @@ class DetectionWindow:
         except Exception as e:
             print(f"Error saving to database: {str(e)}")
 
+    # def run(self):
+    #     """
+    #     Menjalankan proses deteksi dan tracking dengan optimasi performa.
+    #     """
+    #     try:
+    #         frame_time = 1.0 / self.fps
+    #         while True:
+    #             loop_start = time.time()
+                
+    #             ret, frame = self.cap.read()
+    #             if not ret:
+    #                 break
+                
+    #             self.frame_count += 1
+    #             if self.frame_count % self.frame_skip != 0:
+    #                 continue
+                
+    #             # Process frame
+    #             processed_frame = self.process_frame(frame)
+                
+    #             # Display dengan frame rate control
+    #             cv2.imshow("Smart Counting v.4", processed_frame)
+                
+    #             # Kontrol frame rate
+    #             elapsed = time.time() - loop_start
+    #             wait_time = max(1, int((frame_time - elapsed) * 1000))
+    #             if cv2.waitKey(wait_time) & 0xFF == ord('q'):
+    #                 break
+                    
+    #             # Sleep untuk mengurangi penggunaan CPU
+    #             if elapsed < frame_time:
+    #                 time.sleep(frame_time - elapsed)
+                
+    #             key = cv2.waitKey(wait_time) & 0xFF
+    #             if key == ord('q'):
+    #                 break
+    #             elif key == ord('c'):  # Clear vertical lines
+    #                 self.vertical_lines = []    
+    #     except Exception as e:
+    #         print(f"Error in main loop: {e}")
+    #     finally:
+    #         self.cleanup()
+    
+    
     def run(self):
         """
-        Menjalankan proses deteksi dan tracking dengan optimasi performa.
+        Menjalankan proses deteksi dan tracking dengan support RTSP.
         """
         try:
+            is_rtsp = self.video_path.lower().startswith(('rtsp://', 'rtmp://', 'http://'))
             frame_time = 1.0 / self.fps
+            frame_count = 0
+            retry_count = 0
+            max_retries = 3
+            
             while True:
-                loop_start = time.time()
-                
-                ret, frame = self.cap.read()
-                if not ret:
-                    break
-                
-                self.frame_count += 1
-                if self.frame_count % self.frame_skip != 0:
-                    continue
-                
-                # Process frame
-                processed_frame = self.process_frame(frame)
-                
-                # Display dengan frame rate control
-                cv2.imshow("Smart Counting v.4", processed_frame)
-                
-                # Kontrol frame rate
-                elapsed = time.time() - loop_start
-                wait_time = max(1, int((frame_time - elapsed) * 1000))
-                if cv2.waitKey(wait_time) & 0xFF == ord('q'):
-                    break
+                try:
+                    loop_start = time.time()
                     
-                # Sleep untuk mengurangi penggunaan CPU
-                if elapsed < frame_time:
-                    time.sleep(frame_time - elapsed)
-                    
+                    ret, frame = self.cap.read()
+                    if not ret:
+                        if is_rtsp:
+                            print("Lost connection, attempting to reconnect...")
+                            retry_count += 1
+                            if retry_count > max_retries:
+                                print("Max retries exceeded")
+                                break
+
+                            self.cap.release()
+                            time.sleep(1)
+                            self.setup_video_capture()
+                            continue
+                        else:
+                            break
+
+                    retry_count = 0
+                    frame_count += 1
+                    if frame_count % self.frame_skip != 0:
+                        continue
+
+                    processed_frame = self.process_frame(frame)
+                    cv2.imshow("Smart Counting v.4", processed_frame)
+
+                    elapsed = time.time() - loop_start
+                    wait_time = max(1, int((frame_time - elapsed) * 1000))
+                    key = cv2.waitKey(wait_time) & 0xFF
+                    if key == ord('q'):
+                        print("Exiting...")
+                        break
+                    elif key == ord('c'):
+                        print("Clearing vertical lines...")
+                        self.vertical_lines = []
+                    elif key == ord('p'):
+                        print("Paused. Press any key to continue...")
+                        cv2.waitKey(-1)
+                    if elapsed < frame_time:
+                        time.sleep(frame_time - elapsed)
+                        
+                except Exception as e:
+                    print(f"Error in frame processing: {e}")
+                    if is_rtsp:
+                        continue
+                    else:
+                        break
+                        
         except Exception as e:
             print(f"Error in main loop: {e}")
         finally:
             self.cleanup()
+    
     
     def _write_frame_to_buffer(self, frame):
         """
@@ -851,18 +906,14 @@ class DetectionWindow:
         Membersihkan resources dengan proper buffer handling.
         """
         try:
-            # Flush remaining frames in buffer
             if hasattr(self, 'writer_buffer') and self.writer_buffer:
-                self._flush_buffer()
-                
+                self._flush_buffer() 
             if hasattr(self, 'cap'):
                 self.cap.release()
             if hasattr(self, 'video_writer'):
                 self.video_writer.release()
             if hasattr(self, 'repository'):
                 self.repository.close()
-                
-            # Clear memory
             self.tracking_memory.clear()
             self.classification_history.clear()
             
