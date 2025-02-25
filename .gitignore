@@ -1,6 +1,8 @@
-# ignore ALL .log files
-*.txt
+# # ignore ALL .log files
+# *.txt
 
-# ignore ALL files in ANY directory named temp
+# # ignore ALL files in ANY directory named temp
 .venv/
 output/
+build/
+dist/

@@ -21,12 +21,30 @@ class MainWindow:
         self._setup_ui()
     
     def _resource_path(self, relative_path):
-        """Mendapatkan absolute path untuk resource, bekerja baik dalam development maupun dalam executable."""
+        """Mendapatkan absolute path untuk resource yang bekerja di development dan executable."""
         try:
-            base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-        except Exception:
-            base_path = os.path.dirname(os.path.abspath(__file__))
-        return os.path.join(base_path, '..', '..', relative_path)
+            # PyInstaller membuat _MEIPASS jika aplikasi di-bundle
+            base_path = getattr(sys, '_MEIPASS', None)
+            if base_path:
+                return os.path.join(base_path, relative_path)
+            
+            # Jika bukan PyInstaller, coba beberapa lokasi relatif
+            possible_paths = [
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', relative_path),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), relative_path),
+                os.path.join(os.getcwd(), relative_path)
+            ]
+            
+            for path in possible_paths:
+                if os.path.exists(path):
+                    return path
+            
+            # Jika tidak ditemukan, gunakan path terakhir
+            return possible_paths[0]
+            
+        except Exception as e:
+            print(f"Error in _resource_path: {e}")
+            return relative_path
     
     def _create_entry(self, parent, label_text, textvariable, is_password=False):
         """Membuat label dan entry field."""
@@ -60,13 +78,16 @@ class MainWindow:
         self._setup_form(right_frame, form_color)
     
     def _setup_logos(self, frame, bg_color):
-        logo_path = self._resource_path("assets/logo.png")
+        # Logo pertama
+        logo_path = self._resource_path(os.path.join("assets", "logo.png"))
         logo_image = Image.open(logo_path)
         logo_image = logo_image.resize((100, 115))
         self.logo_photo = ImageTk.PhotoImage(logo_image)
         
         logo_label = tk.Label(frame, image=self.logo_photo, bg=bg_color)
         logo_label.pack(pady=20)
+        
+        # Judul aplikasi
         app_title = tk.Label(frame, 
                             text="APLIKASI\nSMART COUNTING", 
                             bg=bg_color, 
@@ -74,7 +95,9 @@ class MainWindow:
                             font=("Arial", 20, "bold"), 
                             justify="center")
         app_title.pack()
-        logo_path2 = self._resource_path("assets/logo_sc.png")
+        
+        # Logo kedua
+        logo_path2 = self._resource_path(os.path.join("assets", "logo_sc.png"))
         logo_image2 = Image.open(logo_path2)
         logo_image2 = logo_image2.resize((100, 115))
         self.logo_photo2 = ImageTk.PhotoImage(logo_image2)

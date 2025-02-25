@@ -5,6 +5,7 @@ import time
 import os
 import torch
 from pathlib import Path
+import tkinter as tk
 from ..core.detector import VehicleDetector
 from ..core.tracker import VehicleTracker
 from ..core.counter import VehicleCounter
@@ -170,12 +171,16 @@ class DetectionWindow:
         Memverifikasi koneksi database aktif dan berfungsi.
         """
         try:
-            self.repository.cursor.execute("SELECT 1")
-            print("Database connection verified successfully")
-            return True
+            if hasattr(self.repository, 'db_available') and self.repository.db_available:
+                self.repository.cursor.execute("SELECT 1")
+                print("Database connection verified successfully")
+                return True
+            else:
+                print("Database not available. Using API only mode.")
+                return True
         except Exception as e:
-            print(f"Database connection error: {str(e)}")
-            return False
+            print(f"Database connection error: {str(e)}. Using API only mode.")
+            return True
         
     def draw_vehicle_box(self, frame, bbox, track_id, vehicle_type, speed, direction, color):
         """
@@ -248,15 +253,13 @@ class DetectionWindow:
     
     def draw_line(self, event, x, y, flags, param):
         """
-        Handler untuk input mouse dalam menggambar garis vertikal.
+        Handler untuk input mouse dalam menggambar satu garis vertikal dinamis.
         """
         if event == cv2.EVENT_LBUTTONDOWN:
             self.drawing = True
-            self.vertical_lines.append(x)
+            # Reset daftar garis dan tambahkan garis baru
+            self.vertical_lines = [x]
             
-        elif event == cv2.EVENT_MOUSEMOVE and self.drawing:
-            self.temp_line = x
-
     def validate_vehicle_class(self, bbox, label):
         """
         Validasi tambahan berdasarkan ukuran kendaraan
@@ -343,23 +346,23 @@ class DetectionWindow:
     
     def _draw_reference_lines(self, frame):
         """
-        Menggambar garis referensi pada frame.
+        Menggambar garis referensi pada frame dengan satu garis vertikal dinamis.
         """
         try:
             counting_line_y = int(self.frame_height * 0.5)
             cv2.line(frame, (0, counting_line_y), 
                     (self.frame_width, counting_line_y), 
-                    (0, 0, 255), 2)            
-            for x_pos in self.vertical_lines:
-                cv2.line(frame, (x_pos, 0), (x_pos, self.frame_height), 
-                        (255, 255, 0), 2)
+                    (0, 0, 255), 2)
 
-                if x_pos < self.frame_width // 2:
-                    cv2.putText(frame, "Lajur Kiri", (x_pos + 10, 30), 
+            if self.vertical_lines:
+                x_pos = self.vertical_lines[-1]
+                cv2.line(frame, (x_pos, 0), (x_pos, self.frame_height), 
+                        (255, 255, 0), 2)  # Warna kuning
+                
+                cv2.putText(frame, "Lajur Kanan", (x_pos + 10, 30), 
                             self.font, self.font_scale * 1.2, self.text_color, 
                             self.line_type)
-                else:
-                    cv2.putText(frame, "Lajur Kanan", (x_pos + 10, 30), 
+                cv2.putText(frame, "Lajur Kiri", (x_pos - 100, 30), 
                             self.font, self.font_scale * 1.2, self.text_color, 
                             self.line_type)
                         
@@ -817,10 +820,74 @@ class DetectionWindow:
     #         self.cleanup()
     
     
+    # def run(self):
+    #     """
+    #     Menjalankan proses deteksi dan tracking dengan support RTSP.
+    #     """
+    #     try:
+    #         is_rtsp = self.video_path.lower().startswith(('rtsp://', 'rtmp://', 'http://'))
+    #         frame_time = 1.0 / self.fps
+    #         frame_count = 0
+    #         retry_count = 0
+    #         max_retries = 3
+            
+    #         while True:
+    #             try:
+    #                 loop_start = time.time()
+                    
+    #                 ret, frame = self.cap.read()
+    #                 if not ret:
+    #                     if is_rtsp:
+    #                         print("Lost connection, attempting to reconnect...")
+    #                         retry_count += 1
+    #                         if retry_count > max_retries:
+    #                             print("Max retries exceeded")
+    #                             break
+
+    #                         self.cap.release()
+    #                         time.sleep(1)
+    #                         self.setup_video_capture()
+    #                         continue
+    #                     else:
+    #                         break
+
+    #                 retry_count = 0
+    #                 frame_count += 1
+    #                 if frame_count % self.frame_skip != 0:
+    #                     continue
+
+    #                 processed_frame = self.process_frame(frame)
+    #                 cv2.imshow("Smart Counting v.4", processed_frame)
+
+    #                 elapsed = time.time() - loop_start
+    #                 wait_time = max(1, int((frame_time - elapsed) * 1000))
+    #                 key = cv2.waitKey(wait_time) & 0xFF
+    #                 if key == ord('q'):
+    #                     print("Exiting...")
+    #                     break
+    #                 elif key == ord('c'):
+    #                     print("Clearing vertical lines...")
+    #                     self.vertical_lines = []
+    #                 elif key == ord('p'):
+    #                     print("Paused. Press any key to continue...")
+    #                     cv2.waitKey(-1)
+    #                 if elapsed < frame_time:
+    #                     time.sleep(frame_time - elapsed)
+                        
+    #             except Exception as e:
+    #                 print(f"Error in frame processing: {e}")
+    #                 if is_rtsp:
+    #                     continue
+    #                 else:
+    #                     break
+                        
+    #     except Exception as e:
+    #         print(f"Error in main loop: {e}")
+    #     finally:
+    #         self.cleanup()
+    
+    
     def run(self):
-        """
-        Menjalankan proses deteksi dan tracking dengan support RTSP.
-        """
         try:
             is_rtsp = self.video_path.lower().startswith(('rtsp://', 'rtmp://', 'http://'))
             frame_time = 1.0 / self.fps
@@ -882,7 +949,12 @@ class DetectionWindow:
             print(f"Error in main loop: {e}")
         finally:
             self.cleanup()
-    
+            cv2.destroyAllWindows()
+            import sys
+            root = tk.Tk()
+            root.withdraw()
+            root.after(100, root.destroy)
+            root.mainloop()
     
     def _write_frame_to_buffer(self, frame):
         """
@@ -901,10 +973,27 @@ class DetectionWindow:
             self.video_writer.write(frame)
         self.writer_buffer.clear()
     
+    # def cleanup(self):
+    #     """
+    #     Membersihkan resources dengan proper buffer handling.
+    #     """
+    #     try:
+    #         if hasattr(self, 'writer_buffer') and self.writer_buffer:
+    #             self._flush_buffer() 
+    #         if hasattr(self, 'cap'):
+    #             self.cap.release()
+    #         if hasattr(self, 'video_writer'):
+    #             self.video_writer.release()
+    #         if hasattr(self, 'repository'):
+    #             self.repository.close()
+    #         self.tracking_memory.clear()
+    #         self.classification_history.clear()
+            
+    #         cv2.destroyAllWindows()
+    #     except Exception as e:
+    #         print(f"Error in cleanup: {e}")
+    
     def cleanup(self):
-        """
-        Membersihkan resources dengan proper buffer handling.
-        """
         try:
             if hasattr(self, 'writer_buffer') and self.writer_buffer:
                 self._flush_buffer() 
@@ -918,5 +1007,7 @@ class DetectionWindow:
             self.classification_history.clear()
             
             cv2.destroyAllWindows()
+            for i in range(5):
+                cv2.waitKey(1)
         except Exception as e:
             print(f"Error in cleanup: {e}")

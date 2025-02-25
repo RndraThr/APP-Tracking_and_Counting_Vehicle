@@ -1,0 +1,6 @@
+@echo off
+echo Cleaning previous build...
+rmdir /s /q build dist
+echo Building application...
+pyinstaller --noconfirm SmartCounting.spec
+echo Build complete! Executable is in dist/SmartCounting/
